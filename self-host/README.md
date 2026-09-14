@@ -16,8 +16,8 @@ data never passes through us.
 
 - You buy a **cloud server** (a.k.a. VPS / cloud instance) — a computer that runs in
   a data center 24/7 and relays the picture between your two devices.
-- **Pick Ubuntu 22.04 / 24.04** — this guide and the script are written for it, and
-  it's the least hassle.
+- **Pick Ubuntu 22.04 / 24.04 / 26.04 LTS** (Debian 12 / 13 works too).
+  **CentOS / RHEL is not supported** — the script detects it and exits with an error.
 - Rough cost: **$5–$10 / month** overseas, **¥30–¥100 / month** in mainland China.
 
 ---
@@ -67,7 +67,8 @@ data never passes through us.
   go too small:
   - If billed by **bandwidth**: pick **≥ 5 Mbps** (more = smoother).
   - If billed by **traffic**: pick **≥ 1 TB / month**.
-- **OS image**: **Ubuntu 22.04 LTS** or **Ubuntu 24.04 LTS**.
+- **OS image**: **Ubuntu 22.04 / 24.04 / 26.04 LTS** (Debian 12 / 13 also works).
+  **Do not pick CentOS / RHEL** — the script doesn't support it.
 - Everything else (20 GB disk, snapshots, …) — defaults are fine.
 
 ### 1.4 After buying, note two things
@@ -105,21 +106,77 @@ On the server (in that terminal window), run:
 
 **Overseas server (GitHub):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/master/self-host/deploy-coturn.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/master/self-host/deploy-coturn.sh | sudo bash -s -- --ip YOUR_PUBLIC_IP
 ```
 
 **Server in mainland China (Gitee — faster there):**
 ```bash
-curl -fsSL https://gitee.com/jiangnan-java/MyDesk-remote-control/raw/master/self-host/deploy-coturn.sh | sudo bash
+curl -fsSL https://gitee.com/jiangnan-java/MyDesk-remote-control/raw/master/self-host/deploy-coturn.sh | sudo bash -s -- --ip YOUR_PUBLIC_IP
 ```
 
-The script will: install Docker (if missing) → detect the public IP → generate a
-random **static key** and a self-signed certificate → write the config → start the
-coturn container → try to open the OS firewall → **print the values to paste into
-MyDesk** (in the final block).
+Replace `YOUR_PUBLIC_IP` with the IP from step 1.4 (looks like `203.0.113.7`).
+**Do not drop the `--ip` argument** — see 3.1 below for why.
 
-> Want to read the script first? Open either link in a browser, save it as a file,
-> then run `sudo bash deploy-coturn.sh`.
+The script will: install coturn (from the distro's own package repo — **no Docker**) →
+confirm the public IP → generate a random **static key** and a self-signed certificate →
+write the config → start coturn and enable it on boot → try to open the OS firewall →
+**print the values to paste into MyDesk** (in the final block).
+
+### 3.1 ⚠️ Always pass the public IP explicitly (the easiest way to waste an hour)
+
+**Why auto-detection isn't enough:** what the script detects is the **egress IP as seen from
+outside**, and that is not necessarily the **public IP your devices connect in to**. Three
+common cases where the two disagree:
+
+- **The server is behind NAT** — the console shows a public IP, but the machine's own NIC only
+  has a **private** address (`10.x` / `172.16–31.x` / `192.168.x`);
+- **Multiple NICs / several public IPs** — detection can pick the wrong one;
+- **Carrier CGNAT, or traffic leaving and arriving via different egress points** — the egress
+  IP and the console's public IP are simply not the same address.
+
+All three end the same way: coturn **advertises a wrong address**, `turn:` won't connect, and
+**there's no obvious error** — so you keep blaming the firewall or the client and burn an
+afternoon on it.
+
+The rule is simple: **trust the public IP shown in your provider's console** and pass it with
+`--ip` rather than leaving it to auto-detection.
+
+**After it finishes, check the block it printed:**
+
+```
+  TURN server : turn:203.0.113.7:3478
+  STUN server : stun:203.0.113.7:3478
+```
+
+That IP **must be your public IP**. If it starts with `10.` / `172.` / `192.168.`, the script
+picked up a private address — **re-run with `--ip <your.public.ip>`** and use the newly printed
+values in the app.
+
+### 3.2 When running the script by hand, give it execute permission
+
+A script you copied from a browser, or copied from Windows onto the server, has **no execute
+permission**. Running `sudo ./deploy-coturn.sh` then fails with:
+
+```
+sudo: cannot execute './deploy-coturn.sh': Permission denied (os error 13)
+```
+
+This is **not about sudo rights** — the kernel refuses to execute a file that has *no* execute
+bit set **even for root**. Two ways around it:
+
+```bash
+# Option 1 — set the execute bit, then run it directly
+chmod +x deploy-coturn.sh
+sudo ./deploy-coturn.sh --ip YOUR_PUBLIC_IP
+
+# Option 2 — leave the bit alone and let bash read the file (simplest)
+sudo bash deploy-coturn.sh --ip YOUR_PUBLIC_IP
+```
+
+> **Don't edit this script in a Windows editor and copy it over.** Windows writes CRLF line
+> endings, and the script then fails with cryptic errors like
+> `set: pipefail: invalid option name`. Edit it on the server with `nano deploy-coturn.sh`
+> instead.
 
 ---
 
@@ -169,6 +226,7 @@ dialog (Settings → Custom relay / 自定义中继 → Add config):
 | Name             | 名称 Name                  | `My relay`                       |
 | TURN server      | TURN 服务器                | `turn:203.0.113.7:3478`          |
 | STUN server      | STUN 服务器                | `stun:203.0.113.7:3478`          |
+| TLS port         | TLS 端口（可选）            | `5349` (leave blank if unused)   |
 | Static secret    | 静态密钥 (鉴权方式=静态密钥)| `9f2c…` (the printed key)        |
 | Bandwidth        | 服务器带宽 (Kb/s)          | `102400` for a 100 Mbps uplink   |
 
@@ -187,8 +245,11 @@ through your own server.
 ## Verify
 
 ```bash
-# container is up and coturn is listening (run on the server)
-docker logs -f mydesk-coturn
+# coturn log, Ctrl+C to quit (run on the server)
+journalctl -u coturn -f
+
+# service status — you want "active (running)"
+systemctl status coturn --no-pager
 ```
 
 Then enable the relay in the app and start a remote session. If it connects, you're
@@ -217,16 +278,24 @@ done. If not, see Troubleshooting.
 
 ```bash
 # logs
-docker logs -f mydesk-coturn
+journalctl -u coturn -f
+
+# restart / stop / status
+systemctl restart coturn
+systemctl stop coturn
+
+# upgrade coturn (tracks the distro's package repo)
+sudo apt-get update && sudo apt-get install --only-upgrade coturn
 
 # rotate the static key (then re-paste it in the app)
-rm /opt/mydesk-coturn/turnserver.conf && sudo bash deploy-coturn.sh
+rm /etc/coturn/mydesk-secret && sudo ./deploy-coturn.sh --ip YOUR_PUBLIC_IP
 
-# upgrade the container
-docker rm -f mydesk-coturn && sudo bash deploy-coturn.sh
+# re-running is safe — the public IP, key and certificate are all reused,
+# so a config you already pasted into the app keeps working
+sudo ./deploy-coturn.sh --ip YOUR_PUBLIC_IP
 
 # uninstall
-docker rm -f mydesk-coturn && rm -rf /opt/mydesk-coturn
+sudo apt-get purge -y coturn && sudo rm -rf /etc/coturn /etc/turnserver.conf
 ```
 
 ---
@@ -240,12 +309,25 @@ docker rm -f mydesk-coturn && rm -rf /opt/mydesk-coturn
 - **Reaches the server but no picture** — almost always **ports not fully opened**:
   go back to Step 4 and confirm the cloud security group allows UDP 3478,
   UDP 5349, and UDP 49152-65535.
-- **Only works on some networks** — use the `turns:` (TLS) address on port 5349;
-  many corporate networks block plain UDP/TCP but allow TLS.
-- **CentOS / RHEL with SELinux** — add `:Z` to the volume mounts in the script, e.g.
-  `-v "$DIR/turnserver.conf:/etc/coturn/turnserver.conf:ro,Z"`.
-- **Behind NAT (private IP on the NIC)** — pass `--ip <your.public.ip>` so coturn
-  advertises the right address.
+- **Only works on some networks** — fill the **TLS port** field with the port the
+  script prints (5349); many corporate networks block plain UDP/TCP but allow TLS.
+  The app then falls back to `turns:` on its own when both UDP and TCP are blocked.
+- **Changed IP / rotated the key without syncing** — re-paste the new values into the app.
+- **The printed TURN server is a private IP** (starts with `10.` / `172.` / `192.168.`) —
+  the server is behind NAT and detection picked the wrong address. Re-run with
+  `--ip <your.public.ip>` (see 3.1).
+- **`Permission denied (os error 13)`** — the script has no execute permission. Run
+  `chmod +x deploy-coturn.sh`, or use `sudo bash deploy-coturn.sh` (see 3.2). Correct sudo
+  rights don't help here.
+- **Cryptic errors like `set: pipefail: invalid option name`** — the script was saved with
+  Windows CRLF line endings. Download it again on the server, or run
+  `sudo sed -i 's/\r$//' deploy-coturn.sh`.
+- **`apt-get update` hangs or fails** — the box is pointed at an upstream mirror that's slow
+  or blocked. Switch `/etc/apt` to `mirrors.aliyun.com` or `mirrors.tuna.tsinghua.edu.cn`
+  and re-run.
+- **coturn won't start** — on failure the script prints `systemctl cat coturn` plus the last
+  20 log lines; paste that and the cause is usually obvious (often a port already in use).
+- **CentOS / RHEL** — not supported; use Ubuntu / Debian.
 
 ---
 

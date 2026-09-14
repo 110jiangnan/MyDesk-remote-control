@@ -14,7 +14,8 @@ MyDesk 默认用我们的公共中继服务器，开箱即用。如果你希望�
 
 - 你要买一台**云服务器**（也叫 VPS、云主机）——它就是一台一直开着、放机房里的电脑，
   帮你的两台设备牵线传画面。
-- 系统**强烈建议选 Ubuntu 22.04 / 24.04**（本教程和脚本都按 Ubuntu 写，最省心）。
+- 系统**请选 Ubuntu 22.04 / 24.04 / 26.04 LTS**（Debian 12 / 13 同样支持）。
+  **不支持 CentOS / RHEL** —— 脚本检测到会直接报错退出，请换成 Ubuntu。
 - 大概花费：**大陆 ¥30–¥100/月**，**海外 $5–$10/月**。
 
 ---
@@ -62,7 +63,8 @@ MyDesk 默认用我们的公共中继服务器，开箱即用。如果你希望�
 - **带宽 / 流量**：**这是重点**。中继要转发画面，别买太小——
   - 选「按带宽」的：**≥ 5 Mbps**（越大越流畅）。
   - 选「按流量」的：**≥ 1TB / 月**。
-- **系统镜像**：选 **Ubuntu 22.04 LTS** 或 **Ubuntu 24.04 LTS**。
+- **系统镜像**：选 **Ubuntu 22.04 / 24.04 / 26.04 LTS**（Debian 12 / 13 也行）。
+  **不要选 CentOS / RHEL**，脚本不支持。
 - 其它（硬盘 20G、快照等）用默认即可。
 
 ### 1.4 买完，记下两样东西
@@ -99,18 +101,72 @@ MyDesk 默认用我们的公共中继服务器，开箱即用。如果你希望�
 
 **大陆服务器（用 Gitee，快）：**
 ```bash
-curl -fsSL https://gitee.com/jiangnan-java/MyDesk-remote-control/raw/master/self-host/deploy-coturn.sh | sudo bash
+curl -fsSL https://gitee.com/jiangnan-java/MyDesk-remote-control/raw/master/self-host/deploy-coturn.sh | sudo bash -s -- --ip 你的公网IP
 ```
 
 **海外服务器（用 GitHub）：**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/master/self-host/deploy-coturn.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/master/self-host/deploy-coturn.sh | sudo bash -s -- --ip 你的公网IP
 ```
 
-脚本会自动：装 Docker（没有的话）→ 探测公网 IP → 生成随机**静态密钥**和自签名证书 →
-写好配置 → 启动 coturn 容器 → 尝试放行系统防火墙 → **把要填进 App 的值打印出来**（在最后一段）。
+把命令最后的 `你的公网IP` 换成第一步 1.4 记下的那串 IP（形如 `203.0.113.7`）。
+**这个 `--ip` 参数不要省**，原因见下面 3.1。
 
-> 想先看脚本内容再跑？可以用浏览器打开上面任意链接，复制保存成文件后运行 `sudo bash deploy-coturn.sh`。
+脚本会自动：装 coturn（走服务器自带的软件源，**不需要 Docker**）→ 确认公网 IP →
+生成随机**静态密钥**和自签名证书 → 写好配置 → 启动 coturn 并设为开机自启 →
+尝试放行系统防火墙 → **把要填进 App 的值打印出来**（在最后一段）。
+
+### 3.1 ⚠️ 必须显式指定公网 IP（最容易白装的一步）
+
+**为什么不能只靠脚本自动探测**：脚本探到的是「**从外面看到的出口 IP**」，而它不一定等于
+「你的设备**连进来**的那个公网 IP」。下面三种情况都会让两者对不上：
+
+- **服务器在 NAT 后面** —— 控制台显示公网 IP，但主机网卡上只有 `10.x` / `172.16–31.x` /
+  `192.168.x` 这种**内网地址**；
+- **多网卡 / 绑了多个公网 IP** —— 探测可能挑中错的那一个；
+- **运营商 CGNAT，或进出方向走不同出口** —— 出口 IP 和控制台里的公网 IP 不是同一个。
+
+三种情况的结果一样：coturn **对外上报了错误的地址**，`turn:` 连不上，而且**报错很不明显**——
+你会一直以为是端口没开或者客户端的问题，白折腾半天。
+
+所以规则很简单：**以云控制台里的公网 IP 为准**，用 `--ip` 显式传进去，不要交给自动探测。
+
+所以命令里的 `--ip <你的公网IP>` 是**必填**的：它让 coturn 对外上报正确的公网地址。
+
+**装完一定要回头核对**脚本最后打印的那段：
+
+```
+  TURN server : turn:203.0.113.7:3478
+  STUN server : stun:203.0.113.7:3478
+```
+
+这里的 IP **必须是公网 IP**。如果看到 `10.` / `172.` / `192.168.` 开头，就是探到内网地址了 ——
+**带上 `--ip <你的公网IP>` 重跑一遍**，再按新打印出来的值填 App。
+
+### 3.2 手动跑脚本时，记得给执行权限
+
+从浏览器复制保存、或从 Windows 传到服务器上的脚本**没有执行权限**，直接
+`sudo ./deploy-coturn.sh` 会报：
+
+```
+sudo: cannot execute './deploy-coturn.sh': Permission denied (os error 13)
+```
+
+这**跟 sudo 权限无关** —— 内核规定一个执行位都没设的文件，**连 root 都不许执行**。
+两个办法二选一：
+
+```bash
+# 办法一：加上执行位，再直接运行
+chmod +x deploy-coturn.sh
+sudo ./deploy-coturn.sh --ip 你的公网IP
+
+# 办法二：不加执行位，交给 bash 去读（推荐，最省事）
+sudo bash deploy-coturn.sh --ip 你的公网IP
+```
+
+> **不要用 Windows 上的编辑器改这个脚本再传进 Linux。** Windows 侧另存会把换行写成一堆
+> `\r\n`，脚本会报 `set: pipefail: invalid option name` 这类看不出所以然的错。
+> 要在服务器上改，就用 `nano deploy-coturn.sh` 直接在服务器里改。
 
 ---
 
@@ -156,6 +212,7 @@ curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/m
 | 名称 Name       | 名称                        | `My relay`                       |
 | TURN server     | TURN 服务器                 | `turn:203.0.113.7:3478`          |
 | STUN server     | STUN 服务器                 | `stun:203.0.113.7:3478`          |
+| TLS port        | TLS 端口（可选）            | `5349`（不用就留空）             |
 | 静态密钥        | 静态密钥（鉴权方式=静态密钥）| `9f2c…`（脚本打印的那串）        |
 | 带宽            | 服务器带宽 (Kb/s)           | 100 Mbps 上行填 `102400`         |
 
@@ -172,8 +229,11 @@ curl -fsSL https://raw.githubusercontent.com/110jiangnan/MyDesk-remote-control/m
 ## 验证
 
 ```bash
-# 看容器日志（在服务器上运行）
-docker logs -f mydesk-coturn
+# 看 coturn 日志，Ctrl+C 退出（在服务器上运行）
+journalctl -u coturn -f
+
+# 看服务状态，active (running) 才是正常的
+systemctl status coturn --no-pager
 ```
 
 然后在 App 里打开中继、发起一次远控。连上即可。若连不上，看下面的排障。
@@ -196,16 +256,23 @@ docker logs -f mydesk-coturn
 
 ```bash
 # 看日志
-docker logs -f mydesk-coturn
+journalctl -u coturn -f
 
-# 轮换静态密钥（之后要在 App 里重新粘贴）
-rm /opt/mydesk-coturn/turnserver.conf && sudo bash deploy-coturn.sh
+# 重启 / 停止 / 看状态
+systemctl restart coturn
+systemctl stop coturn
 
-# 升级容器
-docker rm -f mydesk-coturn && sudo bash deploy-coturn.sh
+# 升级 coturn（跟随发行版仓库的版本）
+sudo apt-get update && sudo apt-get install --only-upgrade coturn
+
+# 轮换静态密钥（之后要在 App 里重新粘贴新密钥）
+rm /etc/coturn/mydesk-secret && sudo ./deploy-coturn.sh --ip 你的公网IP
+
+# 重跑脚本是安全的：公网 IP、密钥、证书都会复用，不会把已经填好的 App 配置搞坏
+sudo ./deploy-coturn.sh --ip 你的公网IP
 
 # 卸载
-docker rm -f mydesk-coturn && rm -rf /opt/mydesk-coturn
+sudo apt-get purge -y coturn && sudo rm -rf /etc/coturn /etc/turnserver.conf
 ```
 
 ---
@@ -217,11 +284,21 @@ docker rm -f mydesk-coturn && rm -rf /opt/mydesk-coturn
   （从脚本输出重新粘贴）。
 - **能到服务器但没有画面** —— 十有八九是**端口没放全**：回第四步，确认云控制台安全组里
   UDP 3478、UDP 5349、UDP 49152-65535 都开了。
-- **只在部分网络能用** —— 改用 5349 的 `turns:`（TLS）地址；很多公司网络会封普通
-  UDP/TCP，但放行 TLS。
-- **CentOS / RHEL 开了 SELinux** —— 给脚本里的挂载加 `:Z`，例如
-  `-v "$DIR/turnserver.conf:/etc/coturn/turnserver.conf:ro,Z"`。
-- **NAT 后面（网卡是内网 IP）** —— 传 `--ip <你的公网IP>`，让 coturn 上报正确地址。
+- **只在部分网络能用** —— 把脚本打印的 TLS 端口（5349）填进 **TLS 端口** 字段；
+  很多公司网络会封普通 UDP/TCP，但放行 TLS。填了之后 UDP、TCP 都不通时 App 会自动
+  回退到 `turns:`。
+- **换了 IP / 改了密钥没同步** —— 重跑脚本后要把新值重新填进 App。
+- **TURN server 打印出来是内网 IP**（`10.` / `172.` / `192.168.` 开头）—— 服务器在 NAT
+  后面，脚本探错了地址。带上 `--ip <你的公网IP>` 重跑一遍（见 3.1）。
+- **`Permission denied (os error 13)`** —— 脚本没有执行权限。`chmod +x deploy-coturn.sh`，
+  或改用 `sudo bash deploy-coturn.sh`（见 3.2）。sudo 权限没问题也一样会报这个。
+- **`set: pipefail: invalid option name` 之类的怪错** —— 脚本被 Windows 编辑器存成了
+  CRLF 换行。在服务器上重新下载一遍，或跑 `sudo sed -i 's/\r$//' deploy-coturn.sh`。
+- **`apt-get update` 卡住或失败** —— 服务器软件源指向了境外。把 `/etc/apt` 下的源换成
+  `mirrors.aliyun.com` 或 `mirrors.tuna.tsinghua.edu.cn` 后重跑。
+- **coturn 起不来** —— 脚本失败时会自动打印 `systemctl cat coturn` 和最后 20 行日志，
+  把那段贴出来就能定位（常见原因是端口被别的进程占了）。
+- **CentOS / RHEL** —— 不支持，请换成 Ubuntu / Debian。
 
 ---
 
